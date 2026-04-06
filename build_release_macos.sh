@@ -102,6 +102,65 @@ if [ -z "$CMAKE_IGNORE_PREFIX_PATH" ]; then
   export CMAKE_IGNORE_PREFIX_PATH="/opt/local:/usr/local:/opt/homebrew"
 fi
 
+# Resolve a usable macOS SDK path from an explicit SDKROOT first, then fall back
+# to xcrun so the build always configures deps and the slicer against the active
+# developer toolchain.
+function resolve_macos_sdk_path() {
+    if [ -n "$SDKROOT" ] && [ -d "$SDKROOT" ]; then
+        echo "$SDKROOT"
+        return 0
+    fi
+
+    if command -v xcrun >/dev/null 2>&1; then
+        local sdk_path
+        sdk_path=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)
+        if [ -n "$sdk_path" ] && [ -d "$sdk_path" ]; then
+            echo "$sdk_path"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# Xcode / Command Line Tools upgrades can leave CMake caches pointing at an SDK
+# path that no longer exists. When that happens, subsequent incremental builds may
+# fail inside deps or the slicer with missing system headers until the build tree
+# is cleared and reconfigured.
+function clear_build_dir_if_sdk_is_stale() {
+    local build_dir="$1"
+    local desired_sdk="$2"
+
+    if [ ! -d "$build_dir" ] || [ "1." == "$BUILD_ONLY". ]; then
+        return 0
+    fi
+
+    local stale_cache
+    stale_cache=$(find "$build_dir" -name CMakeCache.txt -print | while read -r cache_file; do
+        local cached_sdk
+        cached_sdk=$(sed -n 's/^CMAKE_OSX_SYSROOT:PATH=//p' "$cache_file")
+        if [ -n "$cached_sdk" ] && { [ ! -d "$cached_sdk" ] || [ "$cached_sdk" != "$desired_sdk" ]; }; then
+            echo "$cache_file"
+            break
+        fi
+    done)
+
+    if [ -n "$stale_cache" ]; then
+        echo "Removing stale build directory $build_dir due to cached SDK mismatch in $stale_cache"
+        rm -rf "$build_dir"
+    fi
+}
+
+# Export both SDKROOT and CMAKE_OSX_SYSROOT so the shell environment and all
+# downstream CMake invocations use the same validated SDK path.
+if sdk_path=$(resolve_macos_sdk_path); then
+    export SDKROOT="$sdk_path"
+    export CMAKE_OSX_SYSROOT="$sdk_path"
+else
+    echo "Unable to determine a valid macOS SDK path. Install Xcode/Command Line Tools or set SDKROOT manually."
+    exit 1
+fi
+
 CMAKE_VERSION=$(cmake --version | head -1 | sed 's/[^0-9]*\([0-9]*\).*/\1/')
 if [ "$CMAKE_VERSION" -ge 4 ] 2>/dev/null; then
   export CMAKE_POLICY_VERSION_MINIMUM=3.5
@@ -117,6 +176,7 @@ echo " - BUILD_CONFIG: $BUILD_CONFIG"
 echo " - BUILD_TARGET: $BUILD_TARGET"
 echo " - CMAKE_GENERATOR: $SLICER_CMAKE_GENERATOR for Slicer, $DEPS_CMAKE_GENERATOR for deps"
 echo " - OSX_DEPLOYMENT_TARGET: $OSX_DEPLOYMENT_TARGET"
+echo " - CMAKE_OSX_SYSROOT: $CMAKE_OSX_SYSROOT"
 echo " - CMAKE_IGNORE_PREFIX_PATH: $CMAKE_IGNORE_PREFIX_PATH"
 echo
 
@@ -153,6 +213,7 @@ function build_deps() {
             echo "Building deps..."
             (
                 set -x
+                clear_build_dir_if_sdk_is_stale "$DEPS_BUILD_DIR" "$CMAKE_OSX_SYSROOT"
                 mkdir -p "$DEPS"
                 cd "$DEPS_BUILD_DIR"
                 if [ "1." != "$BUILD_ONLY". ]; then
@@ -160,6 +221,7 @@ function build_deps() {
                         -G "${DEPS_CMAKE_GENERATOR}" \
                         -DCMAKE_BUILD_TYPE="$BUILD_CONFIG" \
                         -DCMAKE_OSX_ARCHITECTURES:STRING="${_ARCH}" \
+                        -DCMAKE_OSX_SYSROOT="$CMAKE_OSX_SYSROOT" \
                         -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}" \
                         -DCMAKE_IGNORE_PREFIX_PATH="${CMAKE_IGNORE_PREFIX_PATH}" \
                         ${CMAKE_POLICY_COMPAT}
@@ -192,6 +254,8 @@ function build_slicer() {
             echo "Building slicer for $_ARCH..."
             (
                 set -x
+            # Recreate the build directory if a previous configure cached a stale SDK path.
+            clear_build_dir_if_sdk_is_stale "$PROJECT_BUILD_DIR" "$CMAKE_OSX_SYSROOT"
             mkdir -p "$PROJECT_BUILD_DIR"
             cd "$PROJECT_BUILD_DIR"
             if [ "1." != "$BUILD_ONLY". ]; then
@@ -202,6 +266,7 @@ function build_slicer() {
                     ${BUILD_TESTS:+-DBUILD_TESTS=ON} \
                     -DCMAKE_BUILD_TYPE="$BUILD_CONFIG" \
                     -DCMAKE_OSX_ARCHITECTURES="${_ARCH}" \
+                    -DCMAKE_OSX_SYSROOT="$CMAKE_OSX_SYSROOT" \
                     -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}" \
                     -DCMAKE_IGNORE_PREFIX_PATH="${CMAKE_IGNORE_PREFIX_PATH}" \
                     ${CMAKE_POLICY_COMPAT}
@@ -239,7 +304,7 @@ function build_slicer() {
             cp -R "$resources_path" ./OrcaSlicer.app/Contents/Resources
             # delete .DS_Store file
             find ./OrcaSlicer.app/ -name '.DS_Store' -delete
-            
+
             # Copy OrcaSlicer_profile_validator.app if it exists
             if [ -f "../src$BUILD_DIR_CONFIG_SUBDIR/OrcaSlicer_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
                 echo "Copying OrcaSlicer_profile_validator.app..."

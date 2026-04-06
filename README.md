@@ -175,6 +175,10 @@ All updated build instructions for Windows, macOS, and Linux are now available o
 
 Please refer to the wiki to ensure you're following the latest and most accurate steps for your platform.
 
+For macOS builds, `build_release_macos.sh` now resolves the active SDK path up front, exports it as both `SDKROOT` and `CMAKE_OSX_SYSROOT`, and passes that same validated sysroot into both the deps and slicer CMake configure steps. This avoids accidental drift between the active Xcode toolchain and the SDK path used by cached build trees.
+
+The script also guards against stale cached SDK paths after an Xcode or Command Line Tools update. If a previous CMake configure cached a `CMAKE_OSX_SYSROOT` path that no longer exists, the script will remove the affected `build/*` or `deps/build/*` directory and reconfigure it automatically instead of failing later with missing system header errors.
+
 # Klipper Note
 
 If you're running Klipper, it's recommended to add the following configuration to your `printer.cfg` file.
