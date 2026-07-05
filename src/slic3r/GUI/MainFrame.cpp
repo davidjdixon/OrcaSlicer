@@ -487,7 +487,6 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         update_edge_panels();
 #endif
         wxQueueEvent(wxGetApp().plater(), new SimpleEvent(EVT_NOTICE_CHILDE_SIZE_CHANGED));
-
         fit_tab_labels(); // ORCA on resize
     });
 
@@ -1720,6 +1719,21 @@ bool MainFrame::can_export_all_gcode() const
     return part_plate_list.is_all_slice_results_ready_for_print();
 }
 
+bool MainFrame::can_export_all_sliced_files() const
+{
+    if (m_plater == nullptr)
+        return false;
+
+    if (m_plater->model().objects.empty())
+        return false;
+
+    if (m_plater->is_export_gcode_scheduled())
+        return false;
+
+    PartPlateList& part_plate_list = m_plater->get_partplate_list();
+    return part_plate_list.is_all_slice_result_ready_for_export();
+}
+
 bool MainFrame::can_print_3mf() const
 {
     if (m_plater && !m_plater->model().objects.empty()) {
@@ -1940,6 +1954,8 @@ wxBoxSizer* MainFrame::create_side_tools()
             }
             else if (m_print_select == eExportGcode)
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_GCODE));
+            else if (m_print_select == eExportAllGcode)
+                wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_ALL_GCODE));
             else if (m_print_select == eSendGcode)
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SEND_GCODE));
             else if (m_print_select == eUploadGcode)
@@ -1948,6 +1964,8 @@ wxBoxSizer* MainFrame::create_side_tools()
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_SLICED_FILE));
             else if (m_print_select == eExportAllSlicedFile)
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_ALL_SLICED_FILE));
+        else if (m_print_select == eExportAllSlicedFileIndividual)
+            wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_ALL_SLICED_FILES_INDIVIDUAL));
             else if (m_print_select == eSendToPrinter)
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SEND_TO_PRINTER));
             else if (m_print_select == eSendToPrinterAll)
@@ -2012,6 +2030,18 @@ wxBoxSizer* MainFrame::create_side_tools()
                     p->Dismiss();
                     });
 
+            SideButton* export_all_gcode_btn = new SideButton(p, _L("Export all G-code files"), "");
+            export_all_gcode_btn->SetCornerRadius(0);
+            export_all_gcode_btn->Bind(wxEVT_BUTTON, [this, p](wxCommandEvent&) {
+                m_print_btn->SetLabel(_L("Export all G-code files"));
+                m_print_select = eExportAllGcode;
+                m_print_enable = get_enable_print_status();
+                m_print_btn->Enable(m_print_enable);
+                this->Layout();
+                fit_tab_labels(); // ORCA on label change
+                p->Dismiss();
+            });
+
                 // upload and print
                 SideButton* send_gcode_btn = new SideButton(p, _L("Print"), "");
                 send_gcode_btn->SetCornerRadius(0);
@@ -2046,6 +2076,7 @@ wxBoxSizer* MainFrame::create_side_tools()
                     p->append_button(export_sliced_file_btn);
                 }
 
+                p->append_button(export_all_gcode_btn);
                 p->append_button(export_gcode_btn);
             }
             else {
@@ -2061,6 +2092,12 @@ wxBoxSizer* MainFrame::create_side_tools()
 
                 SideButton* export_all_sliced_file_btn = new SideButton(p, _L("Export all sliced file"), "");
                 export_all_sliced_file_btn->SetCornerRadius(0);
+
+            SideButton* export_all_sliced_files_individual_btn = new SideButton(p, _L("Export all as individual sliced files"), "");
+            export_all_sliced_files_individual_btn->SetCornerRadius(0);
+
+            SideButton* export_all_gcode_btn = new SideButton(p, _L("Export all G-code files"), "");
+            export_all_gcode_btn->SetCornerRadius(0);
 
                 print_plate_btn->Bind(wxEVT_BUTTON, [this, p](wxCommandEvent&) {
                     m_print_btn->SetLabel(_L("Print plate"));
@@ -2126,6 +2163,25 @@ wxBoxSizer* MainFrame::create_side_tools()
                     p->Dismiss();
                     });
 
+            export_all_sliced_files_individual_btn->Bind(wxEVT_BUTTON, [this, p](wxCommandEvent&) {
+                m_print_btn->SetLabel(_L("Export all as individual sliced files"));
+                m_print_select = eExportAllSlicedFileIndividual;
+                m_print_enable = get_enable_print_status();
+                m_print_btn->Enable(m_print_enable);
+                this->Layout();
+                p->Dismiss();
+            });
+
+            export_all_gcode_btn->Bind(wxEVT_BUTTON, [this, p](wxCommandEvent&) {
+                m_print_btn->SetLabel(_L("Export all G-code files"));
+                m_print_select = eExportAllGcode;
+                m_print_enable = get_enable_print_status();
+                m_print_btn->Enable(m_print_enable);
+                this->Layout();
+                fit_tab_labels(); // ORCA on label change
+                p->Dismiss();
+            });
+
                 bool support_send = true;
                 bool support_print_all = true;
 
@@ -2168,6 +2224,8 @@ wxBoxSizer* MainFrame::create_side_tools()
                 }
                 p->append_button(export_sliced_file_btn);
                 p->append_button(export_all_sliced_file_btn);
+            p->append_button(export_all_sliced_files_individual_btn);
+            p->append_button(export_all_gcode_btn);
                 SideButton* export_gcode_btn = new SideButton(p, _L("Export G-code file"), "");
                 export_gcode_btn->SetCornerRadius(0);
                 export_gcode_btn->Bind(wxEVT_BUTTON, [this, p](wxCommandEvent&) {
@@ -2275,6 +2333,13 @@ bool MainFrame::get_enable_print_status()
         }
         enable = enable && !is_all_plates;
     }
+    else if (m_print_select == eExportAllGcode)
+    {
+        if (!part_plate_list.is_all_slice_results_ready_for_print())
+        {
+            enable = false;
+        }
+    }
     else if (m_print_select == eSendGcode)
     {
         if (!current_plate->is_slice_result_valid())
@@ -2315,6 +2380,13 @@ bool MainFrame::get_enable_print_status()
         }
     }
     else if (m_print_select == eExportAllSlicedFile)
+    {
+        if (!part_plate_list.is_all_slice_result_ready_for_export())
+        {
+            enable = false;
+        }
+    }
+    else if (m_print_select == eExportAllSlicedFileIndividual)
     {
         if (!part_plate_list.is_all_slice_result_ready_for_export())
         {
@@ -2792,9 +2864,21 @@ void MainFrame::init_menubar_as_editor()
             [this](wxCommandEvent&) { if (m_plater) wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_ALL_SLICED_FILE)); }, "menu_export_sliced_file", nullptr,
             [this]() {return can_export_all_gcode(); }, this);
 
+        append_menu_item(export_menu, wxID_ANY, _L("Export all as individual sliced files") + dots, _L("Export all plates as individual sliced files"),
+            [this](wxCommandEvent&) { if (m_plater) wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_ALL_SLICED_FILES_INDIVIDUAL)); }, "menu_export_sliced_file", nullptr,
+            [this]() {return can_export_all_sliced_files(); }, this);
+
         append_menu_item(export_menu, wxID_ANY, _L("Export G-code") + dots/* + "\t" + ctrl + "G"*/, _L("Export current plate as G-code"),
             [this](wxCommandEvent&) { if (m_plater) m_plater->export_gcode(false); }, "menu_export_gcode", nullptr,
             [this]() {return can_export_gcode(); }, this);
+
+        append_menu_item(
+            export_menu, wxID_ANY, _L("Export all G-code files") + dots, _L("Export all plates as G-code files"),
+            [this](wxCommandEvent&) {
+                if (m_plater)
+                    wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_ALL_GCODE));
+            },
+            "menu_export_gcode", nullptr, [this]() { return can_export_all_gcode(); }, this);
 
         append_menu_item(export_menu, wxID_ANY, _L("Export toolpaths as OBJ") + dots, _L("Export toolpaths as OBJ"),
             [this](wxCommandEvent&) { if (m_plater != nullptr) m_plater->export_toolpaths_to_obj(); }, "menu_export_toolpaths", nullptr,

@@ -2165,7 +2165,6 @@ Sidebar::Sidebar(Plater *parent)
     p->m_bpButton_add_filament = add_btn;
 
     // ORCA Moved add button after delete button to prevent add button position change when remove icon automatically hidden
-
     ScalableButton* del_btn = new ScalableButton(p->m_panel_filament_title, wxID_ANY, "delete_filament");
     del_btn->SetToolTip(_L("Remove last filament"));
     del_btn->Bind(wxEVT_BUTTON, [this, scrolled_sizer](wxCommandEvent &e) {
@@ -2231,7 +2230,7 @@ Sidebar::Sidebar(Plater *parent)
     sizer_filaments2->Add(p->sizer_filaments, 0, wxEXPAND, 0);
     p->m_panel_filament_content->SetSizer(sizer_filaments2);
     p->m_panel_filament_content->Layout();
-    
+
     update_filaments_area_height(); // ORCA
 
     scrolled_sizer->Add(p->m_panel_filament_content, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(SidebarProps::ContentMarginV())); // ORCA use vertical margin on parent otherwise it shows scrollbar even on 1 filament
@@ -3706,7 +3705,6 @@ void Sidebar::sync_ams_list(bool is_from_big_sync_btn)
         c->update();
     // Expand filament list
     update_filaments_area_height(); // ORCA
-
     // BBS:Synchronized consumables information
     // auto calculation of flushing volumes
     for (int i = 0; i < p->combos_filament.size(); ++i) {
@@ -4812,9 +4810,11 @@ struct Plater::priv
     void on_action_print_plate(SimpleEvent&);
     void on_action_print_all(SimpleEvent&);
     void on_action_export_gcode(SimpleEvent&);
+    void on_action_export_all_gcode(SimpleEvent&);
     void on_action_send_gcode(SimpleEvent&);
     void on_action_export_sliced_file(SimpleEvent&);
     void on_action_export_all_sliced_file(SimpleEvent&);
+    void on_action_export_all_sliced_files_individual(SimpleEvent&);
     void on_action_select_sliced_plate(wxCommandEvent& evt);
     //BBS: change dark/light mode
     void on_change_color_mode(SimpleEvent& evt);
@@ -5373,9 +5373,11 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         q->Bind(EVT_GLTOOLBAR_SELECT_SLICED_PLATE, &priv::on_action_select_sliced_plate, this);
         q->Bind(EVT_GLTOOLBAR_PRINT_ALL, &priv::on_action_print_all, this);
         q->Bind(EVT_GLTOOLBAR_EXPORT_GCODE, &priv::on_action_export_gcode, this);
+        q->Bind(EVT_GLTOOLBAR_EXPORT_ALL_GCODE, &priv::on_action_export_all_gcode, this);
         q->Bind(EVT_GLTOOLBAR_SEND_GCODE, &priv::on_action_send_gcode, this);
         q->Bind(EVT_GLTOOLBAR_EXPORT_SLICED_FILE, &priv::on_action_export_sliced_file, this);
         q->Bind(EVT_GLTOOLBAR_EXPORT_ALL_SLICED_FILE, &priv::on_action_export_all_sliced_file, this);
+        q->Bind(EVT_GLTOOLBAR_EXPORT_ALL_SLICED_FILES_INDIVIDUAL, &priv::on_action_export_all_sliced_files_individual, this);
         q->Bind(EVT_GLTOOLBAR_SEND_TO_PRINTER, &priv::on_action_export_to_sdcard, this);
         q->Bind(EVT_GLTOOLBAR_SEND_TO_PRINTER_ALL, &priv::on_action_export_to_sdcard_all, this);
         q->Bind(EVT_GLTOOLBAR_PRINT_MULTI_MACHINE, &priv::on_action_send_to_multi_machine, this);
@@ -10426,6 +10428,14 @@ void Plater::priv::on_action_export_gcode(SimpleEvent&)
     }
 }
 
+void Plater::priv::on_action_export_all_gcode(SimpleEvent&)
+{
+    if (q != nullptr) {
+        BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received export all gcode event\n";
+        q->export_all_gcode();
+    }
+}
+
 void Plater::priv::on_action_send_gcode(SimpleEvent&)
 {
     if (q != nullptr) {
@@ -10447,6 +10457,14 @@ void Plater::priv::on_action_export_all_sliced_file(SimpleEvent &)
     if (q != nullptr) {
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received export all sliced file event\n";
         q->export_gcode_3mf(true);
+    }
+}
+
+void Plater::priv::on_action_export_all_sliced_files_individual(SimpleEvent &)
+{
+    if (q != nullptr) {
+        BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received export all individual sliced files event\n";
+        q->export_all_sliced_files();
     }
 }
 
@@ -15016,6 +15034,296 @@ void Plater::export_gcode(bool prefer_removable)
             NetworkAgent *agent = wxGetApp().getAgent();
         } catch (...) {}
 
+    }
+}
+
+void Plater::export_all_gcode()
+{
+    if (p->model.objects.empty())
+        return;
+
+    if (is_export_gcode_scheduled()) {
+        GUI::show_error(this, _L("Another export job is running."));
+        return;
+    }
+
+    PartPlateList& part_plate_list = p->partplate_list;
+    if (!part_plate_list.is_all_slice_results_ready_for_print()) {
+        p->notification_manager->push_notification(NotificationType::CustomNotification,
+                                                   NotificationManager::NotificationLevel::WarningNotificationLevel,
+                                                   into_u8(_L("Please slice all plates before exporting.")));
+        return;
+    }
+
+    AppConfig& appconfig = *wxGetApp().app_config;
+    fs::path   default_dir;
+    wxString   project_path = p->get_project_filename(".3mf");
+    if (!project_path.IsEmpty())
+        default_dir = into_path(project_path).parent_path();
+
+    std::string start_dir = appconfig.get_last_output_dir(default_dir.string(), false);
+    if (start_dir.empty())
+        start_dir = appconfig.get_last_dir();
+
+    wxDirDialog dlg(this, _L("Choose a directory"), from_u8(start_dir), wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    fs::path output_dir = into_path(dlg.GetPath());
+    if (output_dir.empty())
+        return;
+
+    wxBusyCursor wait;
+
+    const int                 original_plate = part_plate_list.get_curr_plate_index();
+    Plater::SuppressSnapshots suppress(this);
+
+    size_t                success_count = 0;
+    size_t                failure_count = 0;
+    const int             plate_count   = part_plate_list.get_plate_count();
+    std::set<std::string> used_filenames;
+
+    auto split_filename = [](const fs::path& path) {
+        std::string extension = path.extension().string();
+        fs::path    stem      = path.stem();
+        if (extension == ".gz" && stem.extension() == ".gcode") {
+            extension = ".gcode.gz";
+            stem      = stem.stem();
+        }
+        return std::make_pair(stem.string(), extension);
+    };
+
+    for (int plate_index = 0; plate_index < plate_count; ++plate_index) {
+        PartPlate* plate = part_plate_list.get_plate(plate_index);
+        if (plate == nullptr) {
+            ++failure_count;
+            continue;
+        }
+
+        if (part_plate_list.select_plate(plate_index) != 0) {
+            ++failure_count;
+            continue;
+        }
+
+        part_plate_list.update_slice_context_to_current_plate(p->background_process);
+
+        if (!plate->is_slice_result_valid() || !plate->is_valid_gcode_file()) {
+            ++failure_count;
+            continue;
+        }
+
+        fs::path source_path(plate->get_gcode_filename());
+        fs::path default_output_file;
+        try {
+            default_output_file = p->background_process.output_filepath_for_project("");
+        } catch (const Slic3r::PlaceholderParserError& ex) {
+            show_error(this, ex.what(), true);
+            ++failure_count;
+            continue;
+        } catch (const std::exception& ex) {
+            show_error(this, ex.what(), false);
+            ++failure_count;
+            continue;
+        }
+
+        if (default_output_file.empty()) {
+            wxString fallback_name = get_export_gcode_filename(".gcode", true);
+            if (fallback_name.empty()) {
+                ++failure_count;
+                continue;
+            }
+            default_output_file = fs::path(into_u8(fallback_name));
+        }
+
+        fs::path    dest_path     = output_dir / default_output_file.filename();
+        std::string dest_filename = dest_path.filename().string();
+        if (used_filenames.count(dest_filename) != 0 || boost::filesystem::exists(dest_path)) {
+            auto        base_parts = split_filename(dest_path.filename());
+            std::string base_name  = base_parts.first;
+            std::string extension  = base_parts.second;
+            std::string suffix     = "_plate_" + std::to_string(plate_index + 1);
+            dest_filename          = base_name + suffix + extension;
+            dest_path              = output_dir / dest_filename;
+            int counter            = 2;
+            while (used_filenames.count(dest_filename) != 0 || boost::filesystem::exists(dest_path)) {
+                dest_filename = base_name + suffix + "_" + std::to_string(counter++) + extension;
+                dest_path     = output_dir / dest_filename;
+            }
+        }
+
+        boost::system::error_code ec;
+        boost::filesystem::create_directories(dest_path.parent_path(), ec);
+        ec.clear();
+        boost::filesystem::copy_file(source_path, dest_path, boost::filesystem::copy_option::overwrite_if_exists, ec);
+        if (ec) {
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": copy failed from " << source_path.string() << " to " << dest_path.string() << ": "
+                                    << ec.message();
+            ++failure_count;
+            continue;
+        }
+        used_filenames.insert(dest_path.filename().string());
+        ++success_count;
+    }
+
+    part_plate_list.select_plate(original_plate);
+    part_plate_list.update_slice_context_to_current_plate(p->background_process);
+    appconfig.update_last_output_dir(output_dir.string(), false);
+
+    if (p->notification_manager != nullptr) {
+        if (failure_count == 0) {
+            std::string text = GUI::format(_L("Exported %1% G-code files."), success_count);
+            p->notification_manager->push_notification(NotificationType::CustomNotification,
+                                                       NotificationManager::NotificationLevel::RegularNotificationLevel, text);
+        } else {
+            std::string text = GUI::format(_L("Exported %1% G-code files, %2% failed."), success_count, failure_count);
+            p->notification_manager->push_notification(NotificationType::CustomNotification,
+                                                       NotificationManager::NotificationLevel::ErrorNotificationLevel, text);
+        }
+    }
+}
+
+void Plater::export_all_sliced_files()
+{
+    if (p->model.objects.empty())
+        return;
+
+    if (is_export_gcode_scheduled()) {
+        GUI::show_error(this, _L("Another export job is running."));
+        return;
+    }
+
+    PartPlateList& part_plate_list = p->partplate_list;
+    if (!part_plate_list.is_all_slice_result_ready_for_export()) {
+        p->notification_manager->push_notification(NotificationType::CustomNotification,
+                                                   NotificationManager::NotificationLevel::WarningNotificationLevel,
+                                                   into_u8(_L("Please slice all plates before exporting.")));
+        return;
+    }
+
+    AppConfig& appconfig = *wxGetApp().app_config;
+    fs::path   default_dir;
+    wxString   project_path = p->get_project_filename(".3mf");
+    if (!project_path.IsEmpty())
+        default_dir = into_path(project_path).parent_path();
+
+    std::string start_dir = appconfig.get_last_output_dir(default_dir.string(), false);
+    if (start_dir.empty())
+        start_dir = appconfig.get_last_dir();
+
+    wxDirDialog dlg(this, _L("Choose a directory"), from_u8(start_dir), wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+
+    fs::path output_dir = into_path(dlg.GetPath());
+    if (output_dir.empty())
+        return;
+
+    wxBusyCursor wait;
+
+    const int                 original_plate = part_plate_list.get_curr_plate_index();
+    Plater::SuppressSnapshots suppress(this);
+
+    size_t                success_count = 0;
+    size_t                failure_count = 0;
+    const int             plate_count   = part_plate_list.get_plate_count();
+    std::set<std::string> used_filenames;
+
+    auto split_filename = [](const fs::path& path) {
+        std::string extension = path.extension().string();
+        fs::path    stem      = path.stem();
+        if (extension == ".3mf" && stem.extension() == ".gcode") {
+            extension = ".gcode.3mf";
+            stem      = stem.stem();
+        }
+        return std::make_pair(stem.string(), extension);
+    };
+
+    for (int plate_index = 0; plate_index < plate_count; ++plate_index) {
+        PartPlate* plate = part_plate_list.get_plate(plate_index);
+        if (plate == nullptr) {
+            ++failure_count;
+            continue;
+        }
+
+        if (part_plate_list.select_plate(plate_index) != 0) {
+            ++failure_count;
+            continue;
+        }
+
+        part_plate_list.update_slice_context_to_current_plate(p->background_process);
+
+        if (!plate->is_slice_result_ready_for_export()) {
+            ++failure_count;
+            continue;
+        }
+
+        fs::path default_output_file;
+        try {
+            default_output_file = p->background_process.output_filepath_for_project("");
+        } catch (const Slic3r::PlaceholderParserError& ex) {
+            show_error(this, ex.what(), true);
+            ++failure_count;
+            continue;
+        } catch (const std::exception& ex) {
+            show_error(this, ex.what(), false);
+            ++failure_count;
+            continue;
+        }
+
+        if (default_output_file.empty()) {
+            wxString fallback_name = get_export_gcode_filename(".gcode.3mf", true);
+            if (fallback_name.empty()) {
+                ++failure_count;
+                continue;
+            }
+            default_output_file = fs::path(into_u8(fallback_name));
+        } else {
+            default_output_file.replace_extension(".gcode.3mf");
+            default_output_file = fs::path(Slic3r::fold_utf8_to_ascii(default_output_file.string()));
+        }
+
+        fs::path    dest_path     = output_dir / default_output_file.filename();
+        std::string dest_filename = dest_path.filename().string();
+        if (used_filenames.count(dest_filename) != 0 || boost::filesystem::exists(dest_path)) {
+            auto        base_parts = split_filename(dest_path.filename());
+            std::string base_name  = base_parts.first;
+            std::string extension  = base_parts.second;
+            std::string suffix     = "_plate_" + std::to_string(plate_index + 1);
+            dest_filename          = base_name + suffix + extension;
+            dest_path              = output_dir / dest_filename;
+            int counter            = 2;
+            while (used_filenames.count(dest_filename) != 0 || boost::filesystem::exists(dest_path)) {
+                dest_filename = base_name + suffix + "_" + std::to_string(counter++) + extension;
+                dest_path     = output_dir / dest_filename;
+            }
+        }
+
+        int export_result = export_3mf(dest_path,
+                                       SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::WithGcode | SaveStrategy::SkipModel,
+                                       plate_index);
+        if (export_result != 0) {
+            ++failure_count;
+            continue;
+        }
+
+        used_filenames.insert(dest_path.filename().string());
+        ++success_count;
+    }
+
+    part_plate_list.select_plate(original_plate);
+    part_plate_list.update_slice_context_to_current_plate(p->background_process);
+    appconfig.update_last_output_dir(output_dir.string(), false);
+
+    if (p->notification_manager != nullptr) {
+        if (failure_count == 0) {
+            std::string text = GUI::format(_L("Exported %1% sliced files."), success_count);
+            p->notification_manager->push_notification(NotificationType::CustomNotification,
+                                                       NotificationManager::NotificationLevel::RegularNotificationLevel, text);
+        } else {
+            std::string text = GUI::format(_L("Exported %1% sliced files, %2% failed."), success_count, failure_count);
+            p->notification_manager->push_notification(NotificationType::CustomNotification,
+                                                       NotificationManager::NotificationLevel::ErrorNotificationLevel, text);
+        }
     }
 }
 

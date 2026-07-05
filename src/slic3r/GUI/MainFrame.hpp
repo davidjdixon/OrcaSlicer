@@ -131,6 +131,7 @@ class MainFrame : public DPIFrame
     bool can_export_supports() const;
     bool can_export_gcode() const;
     bool can_export_all_gcode() const;
+    bool can_export_all_sliced_files() const;
     bool can_print_3mf() const;
     bool can_send_gcode() const;
     //bool can_export_gcode_sd() const;
@@ -244,12 +245,14 @@ public:
         ePrintPlate          = 1,
         eExportSlicedFile    = 2,
         eExportGcode         = 3,
-        eSendGcode           = 4,
-        eSendToPrinter       = 5,
-        eSendToPrinterAll    = 6,
-        eUploadGcode         = 7,
-        eExportAllSlicedFile = 8,
-        ePrintMultiMachine   = 9
+        eExportAllGcode      = 4,
+        eSendGcode           = 5,
+        eSendToPrinter       = 6,
+        eSendToPrinterAll    = 7,
+        eUploadGcode         = 8,
+        eExportAllSlicedFile = 9,
+        eExportAllSlicedFileIndividual = 10,
+        ePrintMultiMachine   = 11
     };
 
     void update_layout();
